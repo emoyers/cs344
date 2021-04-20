@@ -51,7 +51,11 @@ int main(void)
 
   thrust::minstd_rand rng;
 
+#if (THRUST_MAJOR_VERSION <= 1) && (THRUST_MINOR_VERSION < 7)
   thrust::random::experimental::normal_distribution<float> normalDist((float)mean, stddev);
+#else
+  thrust::random::normal_distribution<float> normalDist((float)mean, stddev);
+#endif
 
   // Generate the random values
   for (size_t i = 0; i < numElems; ++i) {
