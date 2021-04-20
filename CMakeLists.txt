@@ -15,16 +15,20 @@ link_libraries(${OpenCV_LIBS} )
 
 set (EXECUTABLE_OUTPUT_PATH "${CMAKE_SOURCE_DIR}/bin/")
 
-include_directories("/usr/local/cuda-10.2/include")
+include_directories("/usr/local/cuda-11.2/include")
 
 if(CUDA_FOUND)
   # compared to class settings, we let NVidia's FindCUDA CMake detect 
   # whether to build x64.  We tell it to support most devices, though, 
   # to make sure more people can easily run class code without knowing 
   # about this compiler argument
+  # using this link to find the corresponding  gencode value for the
+  # current architecture: 
+  # https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
+  # i.e. Quadro T1000 has Turing architecture
   set(CUDA_NVCC_FLAGS "
-  -gencode;arch=compute_35,code=sm_35;
-  -gencode;arch=compute_35,code=compute_35;")
+  -gencode;arch=compute_75,code=sm_75;
+  -gencode;arch=compute_75,code=compute_75;")
 
   # add -Wextra compiler flag for gcc compilations
   if (UNIX)
