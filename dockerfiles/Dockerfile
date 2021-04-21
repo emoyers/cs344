@@ -1,9 +1,22 @@
-FROM nvidia/cuda:11.2.2-devel-ubuntu20.04
+FROM nvidia/cuda:11.2.2-cudnn8-devel-ubuntu20.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
 ARG OPENCV_VERSION=4.5.2
 
+# installing cuda samples part
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends cuda-samples-11.2 && \
+    rm -rf /var/lib/apt/lists/*
+    
+# set the working directory 
+WORKDIR /usr/local/cuda/samples/1_Utilities/deviceQuery
+
+RUN make
+
+WORKDIR /
+
+# installing depencies for opencv
 RUN apt-get update && apt-get upgrade -y &&\
     # Install build tools, build dependencies and python
     apt-get install -y \
@@ -42,6 +55,7 @@ RUN apt-get update && apt-get upgrade -y &&\
         python3-numpy \
     && rm -rf /var/lib/apt/lists/*
 
+# installing opencv part
 RUN cd /opt/ &&\
     # Download and unzip OpenCV and opencv_contrib and delte zip files
     wget https://github.com/opencv/opencv/archive/$OPENCV_VERSION.zip &&\
