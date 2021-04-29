@@ -81,3 +81,14 @@ RUN cd /opt/ &&\
     ldconfig &&\
     # Remove OpenCV sources and build folder
     rm -rf /opt/opencv-${OPENCV_VERSION} && rm -rf /opt/opencv_contrib-${OPENCV_VERSION}
+
+# Installing VIM
+RUN apt-get update && apt-get install -y vim
+
+# not getting root user in the terminal    
+ARG USER_ID
+ARG GROUP_ID
+
+RUN addgroup --gid $GROUP_ID user
+RUN adduser --disabled-password --gecos '' --uid $USER_ID --gid $GROUP_ID user
+USER user
