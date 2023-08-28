@@ -237,7 +237,7 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
                         unsigned char *d_blueBlurred,
                         const int filterWidth)
 {
-  const int blockXandY = 32;
+  const int blockXandY = 16;
   // Calculating dynamically the dimensions of the grid in x and y, the term "blockXandY - 1"
   // is just for rounding up.
   const int gridX = (numCols + blockXandY - 1) / blockXandY; 
