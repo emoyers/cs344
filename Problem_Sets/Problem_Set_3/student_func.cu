@@ -80,6 +80,80 @@
 */
 
 #include "utils.h"
+#include "float.h"
+#include <iostream> // remove this
+
+#define MIN(X,Y) (X<Y)?X:Y
+#define MAX(X,Y) (X>Y)?X:Y
+
+__global__ void reduce_min(const float* const d_input, const size_t input_size, 
+                           float* const d_output)
+{
+
+   extern __shared__ float sh_data[];
+   int array_id = threadIdx.x + blockDim.x * blockIdx.x;
+   int thread_id = threadIdx.x;
+
+   // load shared mem from global memory
+   if(array_id < input_size -1)
+   {
+      sh_data[thread_id] = d_input[array_id];
+   }
+   else
+   {
+      sh_data[thread_id] = FLT_MAX;
+   }
+
+   // Do reduction on block level
+   for(unsigned int s=blockDim.x/2; s > 0; s>>=1)
+   {
+      if(thread_id < s)
+      {
+         sh_data[thread_id] = MIN(sh_data[thread_id],sh_data[thread_id+s]);
+      }
+      __syncthreads();
+   }
+
+   if(thread_id == 0)
+   {
+      d_output[blockIdx.x] = sh_data[0];
+   }
+
+}
+
+__global__ void reduce_max(const float* const d_input, const size_t input_size, 
+                           float* const d_output)
+{
+
+   extern __shared__ float sh_data[];
+   int array_id = threadIdx.x + blockDim.x * blockIdx.x;
+   int thread_id = threadIdx.x;
+
+   // load shared mem from global memory
+   if(array_id < input_size -1)
+   {
+      sh_data[thread_id] = d_input[array_id];
+   }
+   else
+   {
+      sh_data[thread_id] = FLT_MIN;
+   }
+
+   // Do reduction on block level
+   for(unsigned int s=blockDim.x/2; s > 0; s>>=1)
+   {
+      if(thread_id < s)
+      {
+         sh_data[thread_id] = MAX(sh_data[thread_id],sh_data[thread_id+s]);
+      }
+      __syncthreads();
+   }
+
+   if(thread_id == 0)
+   {
+      d_output[blockIdx.x] = sh_data[0];
+   }
+}
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -89,16 +163,56 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   const size_t numCols,
                                   const size_t numBins)
 {
-  //TODO
-  /*Here are the steps you need to implement
+
+   /*Here are the steps you need to implement
     1) find the minimum and maximum value in the input logLuminance channel
-       store in min_logLum and max_logLum
-    2) subtract them to find the range
-    3) generate a histogram of all the values in the logLuminance channel using
-       the formula: bin = (lum[i] - lumMin) / lumRange * numBins
-    4) Perform an exclusive scan (prefix sum) on the histogram to get
+       store in min_logLum and max_logLum */
+   
+   int threadsPerBlock = 1024;
+   int numberBlocks = (int)std::ceil(double(numRows*numCols) / (double)threadsPerBlock);
+   const dim3 blockSize(numberBlocks, 1, 1);
+   const dim3 gridSize( threadsPerBlock, 1, 1);
+
+   // find next power of 2 for numberBlocks
+   int powerTwoBlockSize = 1;
+   while(powerTwoBlockSize < numberBlocks)
+   {
+      powerTwoBlockSize *=2;
+   }
+
+   float* d_result_min_max;
+
+   checkCudaErrors(cudaMalloc(&d_result_min_max, powerTwoBlockSize*sizeof(float)));
+   
+   // First pass reduction, doing only reductions per block
+   reduce_min<<<blockSize,gridSize,sizeof(float)*threadsPerBlock>>>(d_logLuminance, numRows*numCols, 
+                                                                    d_result_min_max);
+   // Doing reduction using the output of the previous step to collect the overall minimum
+   reduce_min<<<dim3(1,1,1),dim3(powerTwoBlockSize,1,1),
+                sizeof(float)*threadsPerBlock>>>(d_result_min_max, numberBlocks, d_result_min_max);
+
+   checkCudaErrors(cudaMemcpy(&min_logLum, d_result_min_max, sizeof(float), cudaMemcpyDeviceToHost));
+
+   // First pass reduction, doing only reductions per block
+   reduce_max<<<blockSize,gridSize,sizeof(float)*threadsPerBlock>>>(d_logLuminance, numRows*numCols, 
+                                                                    d_result_min_max);
+   
+   // Doing reduction using the output of the previous step to collect the overall maximum
+   reduce_max<<<dim3(1,1,1),dim3(powerTwoBlockSize,1,1),
+                sizeof(float)*threadsPerBlock>>>(d_result_min_max, numberBlocks, d_result_min_max);
+
+   checkCudaErrors(cudaMemcpy(&max_logLum, d_result_min_max, sizeof(float), cudaMemcpyDeviceToHost));
+
+   checkCudaErrors(cudaFree(d_result_min_max));
+
+   /*2) subtract them to find the range */
+   float range_logLum = max_logLum - min_logLum;
+
+   std::cout<<min_logLum<<" "<<max_logLum<<" range: "<<range_logLum<<std::endl;
+   /*3) generate a histogram of all the values in the logLuminance channel using
+       the formula: bin = (lum[i] - lumMin) / lumRange * numBins */
+   /*4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
-
 
 }
