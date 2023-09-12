@@ -86,22 +86,31 @@
 #define MIN(X,Y) (X<Y)?X:Y
 #define MAX(X,Y) (X>Y)?X:Y
 
-__global__ void reduce_min(const float* const d_input, const size_t input_size, 
-                           float* const d_output)
+__global__ void reduce_min_n_max(const float* const d_input, const size_t input_size, const size_t input_offset_max,
+                                 float* const d_output, const size_t output_size)
 {
 
    extern __shared__ float sh_data[];
    int array_id = threadIdx.x + blockDim.x * blockIdx.x;
    int thread_id = threadIdx.x;
+   int offset_max = blockDim.x;
 
    // load shared mem from global memory
    if(array_id < input_size -1)
    {
+      // for min
       sh_data[thread_id] = d_input[array_id];
+
+      // for max
+      sh_data[offset_max+thread_id] = d_input[array_id+input_offset_max];
    }
    else
    {
+      // for min
       sh_data[thread_id] = FLT_MAX;
+
+      // for max
+      sh_data[offset_max+thread_id] = FLT_MIN;
    }
 
    // Do reduction on block level
@@ -109,50 +118,25 @@ __global__ void reduce_min(const float* const d_input, const size_t input_size,
    {
       if(thread_id < s)
       {
+         // for min
          sh_data[thread_id] = MIN(sh_data[thread_id],sh_data[thread_id+s]);
+
+         // for max
+         sh_data[offset_max+thread_id] = MAX(sh_data[offset_max+thread_id],
+                                             sh_data[offset_max+thread_id+s]);
       }
       __syncthreads();
    }
 
    if(thread_id == 0)
    {
+      // for min
       d_output[blockIdx.x] = sh_data[0];
+
+      // for max
+      d_output[output_size+blockIdx.x] = sh_data[offset_max];
    }
 
-}
-
-__global__ void reduce_max(const float* const d_input, const size_t input_size, 
-                           float* const d_output)
-{
-
-   extern __shared__ float sh_data[];
-   int array_id = threadIdx.x + blockDim.x * blockIdx.x;
-   int thread_id = threadIdx.x;
-
-   // load shared mem from global memory
-   if(array_id < input_size -1)
-   {
-      sh_data[thread_id] = d_input[array_id];
-   }
-   else
-   {
-      sh_data[thread_id] = FLT_MIN;
-   }
-
-   // Do reduction on block level
-   for(unsigned int s=blockDim.x/2; s > 0; s>>=1)
-   {
-      if(thread_id < s)
-      {
-         sh_data[thread_id] = MAX(sh_data[thread_id],sh_data[thread_id+s]);
-      }
-      __syncthreads();
-   }
-
-   if(thread_id == 0)
-   {
-      d_output[blockIdx.x] = sh_data[0];
-   }
 }
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
@@ -182,35 +166,34 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
    float* d_result_min_max;
 
-   checkCudaErrors(cudaMalloc(&d_result_min_max, powerTwoBlockSize*sizeof(float)));
+   checkCudaErrors(cudaMalloc(&d_result_min_max, 2*powerTwoBlockSize*sizeof(float)));
    
-   // First pass reduction, doing only reductions per block
-   reduce_min<<<blockSize,gridSize,sizeof(float)*threadsPerBlock>>>(d_logLuminance, numRows*numCols, 
-                                                                    d_result_min_max);
-   // Doing reduction using the output of the previous step to collect the overall minimum
-   reduce_min<<<dim3(1,1,1),dim3(powerTwoBlockSize,1,1),
-                sizeof(float)*threadsPerBlock>>>(d_result_min_max, numberBlocks, d_result_min_max);
+   // First pass reduction, doing only reductions per block. Offset is 0 because they are copying to shared memory
+   // from same array same values.
+   reduce_min_n_max<<<blockSize,gridSize,2*sizeof(float)*threadsPerBlock>>>(d_logLuminance, numRows*numCols, 0u,
+                                                                            d_result_min_max, powerTwoBlockSize);
+   // Doing reduction using the output of the previous step to collect the overall minimum and maximum. 
+   // Offset is "powerTwoBlockSize" because they are copying to shared memory the output of previous call
+   // which has an offset of powerTwoBlockSize for max values.
+   reduce_min_n_max<<<dim3(1,1,1),dim3(powerTwoBlockSize,1,1),
+                      2*sizeof(float)*powerTwoBlockSize>>>(d_result_min_max, numberBlocks, powerTwoBlockSize, 
+                                                           d_result_min_max, powerTwoBlockSize);
 
+   // Getting min and max from device
    checkCudaErrors(cudaMemcpy(&min_logLum, d_result_min_max, sizeof(float), cudaMemcpyDeviceToHost));
+   checkCudaErrors(cudaMemcpy(&max_logLum, &d_result_min_max[powerTwoBlockSize], sizeof(float), cudaMemcpyDeviceToHost));
 
-   // First pass reduction, doing only reductions per block
-   reduce_max<<<blockSize,gridSize,sizeof(float)*threadsPerBlock>>>(d_logLuminance, numRows*numCols, 
-                                                                    d_result_min_max);
-   
-   // Doing reduction using the output of the previous step to collect the overall maximum
-   reduce_max<<<dim3(1,1,1),dim3(powerTwoBlockSize,1,1),
-                sizeof(float)*threadsPerBlock>>>(d_result_min_max, numberBlocks, d_result_min_max);
-
-   checkCudaErrors(cudaMemcpy(&max_logLum, d_result_min_max, sizeof(float), cudaMemcpyDeviceToHost));
-
+   // Free the device allocated memory
    checkCudaErrors(cudaFree(d_result_min_max));
 
    /*2) subtract them to find the range */
    float range_logLum = max_logLum - min_logLum;
 
-   std::cout<<min_logLum<<" "<<max_logLum<<" range: "<<range_logLum<<std::endl;
+   std::cout<<min_logLum<<" "<<max_logLum<<" range: "<<range_logLum<<std::endl; // TODO remove this
+
    /*3) generate a histogram of all the values in the logLuminance channel using
        the formula: bin = (lum[i] - lumMin) / lumRange * numBins */
+
    /*4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
