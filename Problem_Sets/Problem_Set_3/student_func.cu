@@ -81,7 +81,6 @@
 
 #include "utils.h"
 #include "float.h"
-#include <iostream> // remove this
 
 #define MIN(X,Y) (X<Y)?X:Y
 #define MAX(X,Y) (X>Y)?X:Y
@@ -96,7 +95,7 @@ __global__ void reduce_min_n_max(const float* const d_input, const size_t input_
    int offset_max = blockDim.x;
 
    // load shared mem from global memory
-   if(array_id < input_size -1)
+   if(array_id < input_size)
    {
       // for min
       sh_data[thread_id] = d_input[array_id];
@@ -112,6 +111,7 @@ __global__ void reduce_min_n_max(const float* const d_input, const size_t input_
       // for max
       sh_data[offset_max+thread_id] = FLT_MIN;
    }
+   __syncthreads();
 
    // Do reduction on block level
    for(unsigned int s=blockDim.x/2; s > 0; s>>=1)
@@ -136,6 +136,79 @@ __global__ void reduce_min_n_max(const float* const d_input, const size_t input_
       // for max
       d_output[output_size+blockIdx.x] = sh_data[offset_max];
    }
+
+}
+
+__global__ void generate_histogram(const float* const d_input, const size_t input_size,
+                                   float min_logLum, float range_logLum,
+                                   unsigned int* const d_output, const size_t output_size)
+{
+   // TODO optimize this histogram generation
+   int array_id = threadIdx.x + blockDim.x * blockIdx.x;
+
+   if(array_id < input_size)
+   {
+      unsigned int bin_id = MIN((unsigned int)(output_size - 1u), 
+                                (unsigned int)((d_input[array_id] - min_logLum) / range_logLum * output_size));
+      atomicAdd(&(d_output[bin_id]), 1u);
+   }
+
+}
+
+__global__ void exclusive_scan_histogram(unsigned int* const d_input_ouput, const size_t input_output_size)
+{
+   extern __shared__ unsigned int sh_data_[];
+   size_t thread_id = threadIdx.x;
+
+   // load shared mem from global memory
+   if(thread_id < input_output_size)
+   {
+      sh_data_[thread_id] = d_input_ouput[thread_id];
+   }
+   else
+   {
+      sh_data_[thread_id] = 0u;
+   }
+   __syncthreads();
+
+   // Doing Hillis/Steele inclusive scan
+   size_t power_two_acc = 1u;
+   unsigned int temp_read = 0u;
+   while(power_two_acc < input_output_size)
+   {
+      // Read
+      if(thread_id>=power_two_acc & thread_id < input_output_size)
+      {
+         temp_read = sh_data_[thread_id-power_two_acc];
+      }
+      else
+      {
+         temp_read = 0u;
+      }
+      __syncthreads();
+         
+      sh_data_[thread_id] += temp_read;
+      __syncthreads();
+      // if(thread_id == 1u) printf("%lu, p acc %lu\n", sh_data_[0u], power_two_acc);
+
+      power_two_acc = power_two_acc * 2u;
+   }
+
+   // Converting to exclusice scan and copying to device global memory
+   if(thread_id == 0)
+   {
+      d_input_ouput[thread_id] = 0u;
+   }
+   else if(thread_id < input_output_size)
+   {
+      d_input_ouput[thread_id] = sh_data_[thread_id-1u];
+   }
+   else
+   {
+      // Do nothing
+   }
+   __syncthreads();
+
 
 }
 
@@ -189,13 +262,16 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
    /*2) subtract them to find the range */
    float range_logLum = max_logLum - min_logLum;
 
-   std::cout<<min_logLum<<" "<<max_logLum<<" range: "<<range_logLum<<std::endl; // TODO remove this
-
    /*3) generate a histogram of all the values in the logLuminance channel using
        the formula: bin = (lum[i] - lumMin) / lumRange * numBins */
+   checkCudaErrors(cudaMemset(d_cdf, 0, numBins*sizeof(unsigned int)));
+
+   generate_histogram<<<blockSize,gridSize>>>(d_logLuminance, numRows*numCols, min_logLum, range_logLum, d_cdf, numBins);
+
 
    /*4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
-
+   numberBlocks = (int)std::ceil(double(numBins) / (double)threadsPerBlock);
+   exclusive_scan_histogram<<<dim3(1,1,1), gridSize, sizeof(unsigned int)*numBins>>>(d_cdf, numBins);
 }
