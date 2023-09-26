@@ -4,6 +4,9 @@
 #include "utils.h"
 #include <thrust/host_vector.h>
 
+#define NUMBER_BITS_IN_BYTE (8u)
+#define MIN(X,Y) (X<Y)?X:Y
+
 /* Red Eye Removal
    ===============
    
@@ -42,6 +45,24 @@
 
  */
 
+__global__ void create_histogram_per_digit(const unsigned int* const input_vals, const size_t input_size,
+                                           const unsigned int mask, const unsigned int starting_bit, 
+                                           unsigned int* const output_hist, const unsigned int output_size)
+{
+  unsigned int temp_val;
+  size_t thread_id = threadIdx.x;
+
+  unsigned int idx = thread_id;
+  while(idx < input_size)
+  {
+    temp_val = MIN((input_vals[idx] >> starting_bit) & mask, output_size-1u);
+    atomicAdd(&output_hist[temp_val], 1);
+
+    idx += blockDim.x;
+  }
+
+}
+
 
 void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_inputPos,
@@ -49,6 +70,34 @@ void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_outputPos,
                const size_t numElems)
 { 
-  //TODO
-  //PUT YOUR SORT HERE
+  const unsigned int threadsPerBlock = 1024;
+  const dim3 blockSize(1, 1, 1);
+  const dim3 gridSize( threadsPerBlock, 1, 1);
+
+  const unsigned int mask =  0xffff;
+  const unsigned int numBits = 16;
+  const unsigned int numBins = 1 << numBits;
+  unsigned int* d_binHistogram;
+  unsigned int* d_binScan; 
+
+  checkCudaErrors(cudaMalloc(&d_binHistogram, numBins*sizeof(unsigned int)));
+  checkCudaErrors(cudaMalloc(&d_binScan, numBins*sizeof(unsigned int)));
+
+  for (unsigned int i=0u; i< NUMBER_BITS_IN_BYTE * sizeof(unsigned int); i+= numBits)
+  {
+
+    checkCudaErrors(cudaMemset(d_binHistogram, 0, numBins*sizeof(unsigned int)));
+    checkCudaErrors(cudaMemset(d_binScan, 0, numBins*sizeof(unsigned int)));
+
+    /* 1) Histogram of the number of occurrences of each digit */
+    create_histogram_per_digit<<<blockSize, gridSize>>>(d_inputVals, numElems, 
+                                                        mask, i, d_binHistogram, 
+                                                        numBins);
+    
+    /* 2) Exclusive Prefix Sum of Histogram */
+
+  }
+
+  checkCudaErrors(cudaFree(d_binHistogram));
+  checkCudaErrors(cudaFree(d_binScan));
 }
