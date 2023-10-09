@@ -189,7 +189,6 @@ __global__ void exclusive_scan_histogram(unsigned int* const d_input_ouput, cons
          
       sh_data_[thread_id] += temp_read;
       __syncthreads();
-      // if(thread_id == 1u) printf("%lu, p acc %lu\n", sh_data_[0u], power_two_acc);
 
       power_two_acc = power_two_acc * 2u;
    }
